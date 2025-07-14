@@ -15,7 +15,7 @@ static int handle_event(void *ctx, void *data, size_t len) {
 
     auto *evt = static_cast<task_event*>(data);
 
-    // 🟢 Debug 印出完整欄位
+    //  Debug 印出完整欄位
     std::cout << "[RingBuffer] Event received:" << std::endl;
     std::cout << "  PID:            " << evt->pid << std::endl;
     std::cout << "  Priority:       " << evt->prio << std::endl;
