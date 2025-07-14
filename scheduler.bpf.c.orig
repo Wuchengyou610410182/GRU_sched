@@ -1,0 +1,87 @@
+// ebpf/scheduler.bpf.c
+
+#define FALLBACK_DSQ 4242
+
+
+
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_core_read.h>
+#include <bpf/bpf_tracing.h>
+#include <scx/common.bpf.h>
+#include "sched.h"   // 
+#include "maps.h"    // 
+#include <linux/types.h>
+
+struct task_event {
+    u32 pid;
+    u32 prio;
+    u32 nr_cpus_allowed;
+    u64 runtime_ns;
+    u64 nvcsw;
+    u64 total_exec_runtime;
+    u64 switch_count;
+};
+
+
+
+char LICENSE[] SEC("license") = "Dual BSD/GPL";
+
+const volatile s32 CENTRAL_CPU = 0;
+
+s32 BPF_KPROBE(trace_sched_switch, struct task_struct *prev, struct task_struct *next) {
+    u32 pid = BPF_CORE_READ(next, pid);
+    bpf_map_update_elem(&switch_count, &pid, &(u64){1}, BPF_ANY);
+    return 0;
+}
+
+s32 BPF_STRUCT_OPS(gru_select_cpu, struct task_struct *p, s32 prev_cpu, u64 wake_flags) {
+    s32 cpu = scx_bpf_select_cpu_dfl(p, prev_cpu, wake_flags, NULL);
+    return cpu;
+}
+
+void BPF_STRUCT_OPS(gru_enqueue, struct task_struct *p, u64 enq_flags) {
+    struct task_event evt = {};
+    u32 pid = p->pid;
+
+    evt.pid = pid;
+    evt.prio = p->prio;
+    evt.nr_cpus_allowed = p->nr_cpus_allowed;
+    evt.runtime_ns = p->se.sum_exec_runtime;
+    evt.vruntime = p->se.vruntime;
+
+    u64 *sw = bpf_map_lookup_elem(&switch_count, &pid);
+    evt.switch_count = sw ? *sw : 0;
+
+    evt.timestamp_ns = bpf_ktime_get_ns();
+
+    bpf_ringbuf_output(&event_ringbuf, &evt, sizeof(evt), 0);
+
+    scx_bpf_dsq_insert(p, FALLBACK_DSQ, SCX_SLICE_DFL, 0);
+
+}
+
+void BPF_STRUCT_OPS(gru_dispatch, s32 cpu, struct task_struct *prev) {
+    if (cpu == CENTRAL_CPU)
+        scx_bpf_dsq_move_to_local(FALLBACK_DSQ);
+
+}
+
+s32 BPF_STRUCT_OPS_SLEEPABLE(gru_init) {
+    __COMPAT_scx_bpf_switch_all();
+
+    return scx_bpf_create_dsq(FALLBACK_DSQ, 0);
+}
+
+void BPF_STRUCT_OPS(gru_exit, struct scx_exit_info *ei) { return; }
+
+SEC(".struct_ops")
+struct sched_ext_ops gru_sched_ops = {
+    .select_cpu = (void *)gru_select_cpu,
+    .enqueue = (void *)gru_enqueue,
+    .dispatch = (void *)gru_dispatch,
+    .init = (void *)gru_init,
+    .exit = (void *)gru_exit,
+    .name = "gru_sched",
+};
+

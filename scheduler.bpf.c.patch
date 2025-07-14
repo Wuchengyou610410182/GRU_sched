@@ -1,0 +1,59 @@
+--- a/scheduler.bpf.c
++++ b/scheduler.bpf.c
+@@ -1,10 +1,13 @@
+-#define FALLBACK_DSQ 4242
+-
+-#include "vmlinux.h"
+-#include <bpf/bpf_helpers.h>
+-#include <bpf/bpf_core_read.h>
+-#include <bpf/bpf_tracing.h>
+-#include <scx/common.bpf.h>
+-#include "sched.h"   // 
+-#include "maps.h"    // 
+-#include <linux/types.h>
++#define FALLBACK_DSQ 4242
++
++#include "vmlinux.h"
++#include <bpf/bpf_helpers.h>
++#include <bpf/bpf_core_read.h>
++#include <bpf/bpf_tracing.h>
++#include <scx/common.bpf.h>
++#include <scx/compat.bpf.h>     // ✅ for __COMPAT_scx_bpf_switch_all
++#include "sched.h"              // ✅ 定義 struct task_event
++#include "maps.h"               // ✅ 定義 ringbuf, map
++
++// ❌ 禁止 include glibc/linux user-space headers
++// #include <sched.h>
++// #include <linux/types.h>
+
+@@ struct task_event {
+-    u64 runtime_ns;
+-    u64 nvcsw;
+-    u64 total_exec_runtime;
+-    u64 switch_count;
++    u64 runtime_ns;
++    u64 nvcsw;
++    u64 total_exec_runtime;
++    u64 switch_count;
++    u64 vruntime;         // ✅ 補上漏掉欄位
++    u64 timestamp_ns;     // ✅ 補上漏掉欄位
+ };
+
+@@ void BPF_STRUCT_OPS(gru_enqueue, struct task_struct *p, u64 enq_flags) {
+-    evt.vruntime = p->se.vruntime;
+-    ...
+-    evt.timestamp_ns = bpf_ktime_get_ns();
++    evt.vruntime = p->se.vruntime;
++    evt.timestamp_ns = bpf_ktime_get_ns();
+
+@@ void BPF_STRUCT_OPS(gru_dispatch, s32 cpu, struct task_struct *prev) {
+-    scx_bpf_dsq_move_to_local(FALLBACK_DSQ);
++    scx_bpf_dsq_move_to_local(FALLBACK_DSQ);  // ✅ 新 API
+
+@@ s32 BPF_STRUCT_OPS_SLEEPABLE(gru_init) {
+-    __COMPAT_scx_bpf_switch_all();
+-    return scx_bpf_create_dsq(FALLBACK_DSQ, 0);
++    __COMPAT_scx_bpf_switch_all();   // ✅ 正確初始化所有任務
++    return scx_bpf_create_dsq(FALLBACK_DSQ, 0);
+ }
+
